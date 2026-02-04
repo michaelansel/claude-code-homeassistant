@@ -18,14 +18,17 @@ RUN apk add --no-cache \
 
 # Create non-root user
 RUN addgroup -g 1000 node && \
-    adduser -D -u 1000 -G node node
+    adduser -D -u 1000 -G node node && \
+    mkdir -p /home/node/.npm-global && \
+    chown -R node:node /home/node
 
 USER node
 
 # Install Claude Code
 ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
 ENV PATH=$PATH:/home/node/.npm-global/bin
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+RUN npm config set cache /home/node/.npm --global && \
+    npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # Switch back to root for copying service scripts
 USER root
