@@ -31,4 +31,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OAuth token stored securely by HA Supervisor
 - Isolated container environment
 
-[0.1.0]: https://github.com/your-org/claude-code-homeassistant/releases/tag/v0.1.0
+[0.1.0]: https://github.com/michaelansel/claude-code-homeassistant/releases/tag/v0.1.0

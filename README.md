@@ -72,6 +72,11 @@ No Python orchestration, no subprocess management, no complexity. The c3po plugi
 - Docker or Finch for building
 - Access to c3po coordinator (for testing)
 
+### Repository
+
+- **GitHub**: https://github.com/michaelansel/claude-code-homeassistant
+- **Add-on Store URL**: Add to HA via Settings → Add-ons → Repositories
+
 ### Local Development
 
 1. **Clone the repository**:

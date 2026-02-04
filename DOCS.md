@@ -234,7 +234,7 @@ To run multiple agents (e.g., for different projects), install multiple instance
 ## Support
 
 For issues and feature requests:
-- GitHub: [claude-code-homeassistant issues](https://github.com/your-org/claude-code-homeassistant/issues)
+- GitHub: [claude-code-homeassistant issues](https://github.com/michaelansel/claude-code-homeassistant/issues)
 - c3po Documentation: [c3po docs](https://github.com/michaelansel/claude-code-plugins)
 
 ## Credits
