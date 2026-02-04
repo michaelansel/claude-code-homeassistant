@@ -12,13 +12,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  info:
     runs-on: ubuntu-latest
-    name: Build ${{ matrix.arch }}
-    strategy:
-      matrix:
-        arch: [aarch64, amd64, armv7]
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      slug: ${{ steps.slug.outputs.slug }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,6 +27,25 @@ jobs:
           VERSION=$(grep '^version:' config.yaml | awk '{print $2}' | tr -d '"')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+
+      - name: Get slug from config.yaml
+        id: slug
+        run: |
+          SLUG=$(grep '^slug:' config.yaml | awk '{print $2}' | tr -d '"')
+          echo "slug=$SLUG" >> $GITHUB_OUTPUT
+          echo "Slug: $SLUG"
+
+  build:
+    needs: info
+    runs-on: ubuntu-latest
+    name: Build ${{ matrix.arch }}
+    strategy:
+      matrix:
+        arch: [aarch64, amd64, armv7]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -41,9 +58,9 @@ jobs:
         uses: home-assistant/builder@master
         with:
           args: |
-            --${{ matrix.arch }} \
             --target /data \
-            --generic ${{ steps.version.outputs.version }}
+            --${{ matrix.arch }} \
+            --docker-hub ghcr.io/${{ github.repository_owner }}
 
   publish-release:
     needs: build
