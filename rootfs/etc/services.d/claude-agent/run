@@ -1,0 +1,96 @@
+#!/usr/bin/with-contenv bashio
+
+bashio::log.info "Starting Claude Code agent..."
+
+# Validate OAuth token
+if ! bashio::config.has_value 'oauth_token'; then
+    bashio::log.fatal "OAuth token required in add-on configuration"
+    exit 1
+fi
+
+TOKEN=$(bashio::config 'oauth_token')
+if [[ ! "$TOKEN" =~ ^sk-ant- && ! "$TOKEN" =~ ^sk-at- ]]; then
+    bashio::log.fatal "Invalid token format (must start with sk-ant- or sk-at-)"
+    exit 1
+fi
+
+# Validate c3po configuration
+if ! bashio::config.has_value 'c3po_coordinator_url'; then
+    bashio::log.fatal "c3po coordinator URL required"
+    exit 1
+fi
+
+C3PO_URL=$(bashio::config 'c3po_coordinator_url')
+WORK_DIR=$(bashio::config 'work_dir')
+PROJECT_NAME=$(bashio::config 'project_name')
+MACHINE_NAME=$(bashio::config 'machine_name')
+
+# Initialize .claude.json if it doesn't exist (for MCP config persistence)
+if [ ! -f /home/node/.claude.json ]; then
+    echo '{}' > /home/node/.claude.json
+    chown node:node /home/node/.claude.json
+fi
+
+# Set up c3po plugin on first run
+# After enrollment, c3po stores credentials in /home/node/.claude/c3po-credentials.json
+# which persists via symlink to /data/claude/c3po-credentials.json
+if [ ! -f /data/.c3po-setup-complete ]; then
+    bashio::log.info "Setting up c3po plugin (first run)..."
+
+    # Admin token only required for initial enrollment
+    if ! bashio::config.has_value 'c3po_admin_token'; then
+        bashio::log.fatal "c3po admin token required for first-time setup"
+        exit 1
+    fi
+
+    C3PO_TOKEN=$(bashio::config 'c3po_admin_token')
+
+    # Switch to node user for setup
+    s6-setuidgid node bash <<EOF
+        export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+
+        # Add marketplace and install plugin
+        claude plugin marketplace add michaelansel/claude-code-plugins 2>/dev/null || true
+        claude plugin install c3po@michaelansel 2>/dev/null || claude plugin update c3po@michaelansel || true
+
+        # Find and run enrollment script
+        SETUP_PY=\$(find /home/node/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
+        if [ -z "\$SETUP_PY" ]; then
+            echo "Error: Could not find c3po setup.py" >&2
+            exit 1
+        fi
+
+        # Enroll with coordinator - this creates c3po-credentials.json
+        python3 "\$SETUP_PY" --enroll "$C3PO_URL" "$C3PO_TOKEN" \
+            --machine "$MACHINE_NAME" \
+            --pattern "ha/*"
+
+        # Verify credentials were created
+        if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
+            echo "Error: c3po enrollment failed - no credentials file created" >&2
+            exit 1
+        fi
+EOF
+
+    touch /data/.c3po-setup-complete
+    bashio::log.info "c3po plugin setup complete"
+    bashio::log.info "Machine credentials stored in /data/claude/c3po-credentials.json"
+    bashio::log.info "You can now remove c3po_admin_token from add-on config (optional)"
+else
+    bashio::log.info "c3po already enrolled, using stored credentials"
+
+    # Verify credentials still exist
+    if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
+        bashio::log.fatal "c3po credentials missing! Remove /data/.c3po-setup-complete and restart to re-enroll"
+        exit 1
+    fi
+fi
+
+# Export token and project name for claude
+export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+export CLAUDE_PROJECT_NAME="$PROJECT_NAME"
+
+# Run claude with /c3po auto as node user
+bashio::log.info "Starting /c3po auto in ${WORK_DIR}..."
+cd "$WORK_DIR"
+exec s6-setuidgid node claude --dangerously-skip-permissions -p "/c3po auto"

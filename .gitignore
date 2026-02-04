@@ -1,0 +1,18 @@
+# Development
+*.log
+*.tmp
+.DS_Store
+
+# Build artifacts
+*.tar.gz
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local testing
+test-data/
+test-config/

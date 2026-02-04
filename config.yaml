@@ -1,0 +1,35 @@
+name: Claude Code Agent
+version: "0.1.0"
+slug: claude-code-agent
+description: Run Claude Code agents with c3po coordination
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+hassio_api: true
+hassio_role: default
+homeassistant_api: true
+
+# Persistent storage mapping
+map:
+  - config:rw     # HA config (read-write)
+  - share:rw      # Shared storage
+  - media:ro      # Media files (optional, read-only)
+
+# Configuration options
+options:
+  oauth_token: ""
+  c3po_coordinator_url: ""
+  c3po_admin_token: ""
+  work_dir: "/config"
+  project_name: "homeassistant"
+  machine_name: "homeassistant"
+
+schema:
+  oauth_token: str
+  c3po_coordinator_url: str
+  c3po_admin_token: password?
+  work_dir: str
+  project_name: str
+  machine_name: str
