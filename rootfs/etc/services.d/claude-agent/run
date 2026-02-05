@@ -46,9 +46,14 @@ if [ ! -f /data/.c3po-setup-complete ]; then
     C3PO_TOKEN=$(bashio::config 'c3po_admin_token')
 
     # Switch to node user for setup
+    # TMPDIR must be writable by the node user for git clone operations
+    mkdir -p /home/node/.claude/tmp
+    chown node:node /home/node/.claude/tmp
+
     s6-setuidgid node bash <<EOF
         set -e
         export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+        export TMPDIR=/home/node/.claude/tmp
 
         # Add marketplace and install plugin
         echo "Adding c3po marketplace..."
@@ -92,6 +97,7 @@ fi
 # Export token and project name for claude
 export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 export CLAUDE_PROJECT_NAME="$PROJECT_NAME"
+export TMPDIR=/home/node/.claude/tmp
 
 # Run claude with /c3po auto as node user
 bashio::log.info "Starting /c3po auto in ${WORK_DIR}..."
