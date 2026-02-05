@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.11"
+ADDON_VERSION="0.1.12"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -74,12 +74,6 @@ if [ ! -f /data/.c3po-setup-complete ]; then
             --machine "$MACHINE_NAME" \
             --pattern "ha/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
 
-    # Verify credentials were created
-    if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
-        bashio::log.fatal "c3po enrollment failed - no credentials file created"
-        exit 1
-    fi
-
     # Install the plugin for hooks/skills (needed for /c3po auto)
     bashio::log.info "Installing c3po plugin..."
     s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
@@ -90,18 +84,18 @@ if [ ! -f /data/.c3po-setup-complete ]; then
         | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
 
     touch /data/.c3po-setup-complete
-    bashio::log.info "c3po plugin setup complete"
-    bashio::log.info "Machine credentials stored in /data/claude/c3po-credentials.json"
+    bashio::log.info "c3po setup complete"
     bashio::log.info "You can now remove c3po_admin_token from add-on config (optional)"
-else
-    bashio::log.info "c3po already enrolled, using stored credentials"
-
-    # Verify credentials still exist
-    if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
-        bashio::log.fatal "c3po credentials missing! Remove /data/.c3po-setup-complete and restart to re-enroll"
-        exit 1
-    fi
 fi
+
+# Verify setup using claude's own commands
+bashio::log.info "Verifying MCP configuration..."
+s6-setuidgid node env HOME=/home/node CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+    claude mcp list 2>&1 | while IFS= read -r line; do bashio::log.info "  mcp: $line"; done
+
+bashio::log.info "Verifying plugin installation..."
+s6-setuidgid node env HOME=/home/node CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+    claude plugin list 2>&1 | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done
 
 # Export token and project name for claude
 export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
