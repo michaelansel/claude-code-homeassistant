@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.10"
+ADDON_VERSION="0.1.11"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -111,4 +111,8 @@ export TMPDIR=/home/node/.claude/tmp
 # Run claude with /c3po auto as node user
 bashio::log.info "Starting /c3po auto in ${WORK_DIR}..."
 cd "$WORK_DIR"
-exec s6-setuidgid node claude --dangerously-skip-permissions -p "/c3po auto"
+export HOME=/home/node
+s6-setuidgid node claude --dangerously-skip-permissions -p "/c3po auto" 2>&1 \
+    | while IFS= read -r line; do bashio::log.info "  claude: $line"; done
+CLAUDE_RC=${PIPESTATUS[0]}
+bashio::log.warning "Claude exited with code ${CLAUDE_RC}"
