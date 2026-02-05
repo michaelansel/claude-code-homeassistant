@@ -55,11 +55,28 @@ if [ ! -f /data/.c3po-setup-complete ]; then
         export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
         export TMPDIR=/home/node/.claude/tmp
 
+        # Debug: filesystem info
+        echo "=== Debug: filesystem layout ==="
+        echo "HOME=\$HOME"
+        ls -la /home/node/.claude
+        echo "---"
+        df -h /home/node/.claude /tmp /home/node/.claude/tmp 2>&1 || true
+        echo "---"
+        mount | grep -E '(/data|/home|/tmp)' || true
+        echo "=== End debug ==="
+
         # Add marketplace and install plugin
         echo "Adding c3po marketplace..."
-        claude plugin marketplace add michaelansel/claude-code-plugins
+        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1
+        echo "marketplace add exit code: \$?"
         echo "Installing c3po plugin..."
-        claude plugin install c3po@michaelansel || claude plugin update c3po@michaelansel
+        claude plugin install c3po@michaelansel 2>&1 || claude plugin update c3po@michaelansel 2>&1
+        echo "plugin install exit code: \$?"
+
+        # Debug: check what was created
+        echo "=== Debug: after plugin install ==="
+        ls -laR /home/node/.claude/plugins/ 2>&1 || echo "No plugins dir exists"
+        echo "=== End debug ==="
 
         # Find and run enrollment script
         SETUP_PY=\$(find /home/node/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
