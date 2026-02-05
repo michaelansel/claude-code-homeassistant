@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.9"
+ADDON_VERSION="0.1.10"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -63,21 +63,11 @@ if [ ! -f /data/.c3po-setup-complete ]; then
     git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
     export GIT_TERMINAL_PROMPT=0
 
-    # Debug: filesystem layout
-    bashio::log.info "Debug: symlink target: $(readlink -f /home/node/.claude)"
-    bashio::log.info "Debug: df output:"
-    df -h /home/node /home/node/.claude /tmp 2>&1 | while read line; do bashio::log.info "  $line"; done
-    bashio::log.info "Debug: ls -la /home/node/.claude:"
-    ls -la /home/node/.claude 2>&1 | while read line; do bashio::log.info "  $line"; done
-
-    # Skip plugin system — it crashes in this container environment.
-    # Instead: download setup.py directly and run enrollment manually.
-
+    # Download setup.py and run enrollment (lightweight, avoids plugin system OOM)
     bashio::log.info "Downloading c3po setup script..."
     curl -fsSL https://raw.githubusercontent.com/michaelansel/c3po/main/setup.py -o /tmp/c3po-setup.py
     bashio::log.info "Download complete"
 
-    # Run enrollment as node user
     bashio::log.info "Running enrollment..."
     s6-setuidgid node env HOME=/home/node CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         python3 /tmp/c3po-setup.py --enroll "$C3PO_URL" "$C3PO_TOKEN" \
@@ -90,7 +80,7 @@ if [ ! -f /data/.c3po-setup-complete ]; then
         exit 1
     fi
 
-    # Now install the plugin for hooks/skills (needed for /c3po auto)
+    # Install the plugin for hooks/skills (needed for /c3po auto)
     bashio::log.info "Installing c3po plugin..."
     s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
@@ -98,9 +88,6 @@ if [ ! -f /data/.c3po-setup-complete ]; then
     s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         claude plugin install c3po@michaelansel 2>&1 \
         | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
-
-    bashio::log.info "Debug: ~/.claude contents after setup:"
-    find /home/node/.claude -maxdepth 3 -ls 2>&1 | while IFS= read -r line; do bashio::log.info "  $line"; done
 
     touch /data/.c3po-setup-complete
     bashio::log.info "c3po plugin setup complete"
