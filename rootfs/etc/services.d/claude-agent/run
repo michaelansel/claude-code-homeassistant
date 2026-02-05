@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.5"
+ADDON_VERSION="0.1.6"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -26,6 +26,11 @@ C3PO_URL=$(bashio::config 'c3po_coordinator_url')
 WORK_DIR=$(bashio::config 'work_dir')
 PROJECT_NAME=$(bashio::config 'project_name')
 MACHINE_NAME=$(bashio::config 'machine_name')
+
+# Ensure persistent storage exists (/home/node/.claude is a symlink to /data/claude)
+# /data is a volume mounted at runtime, so the target dir may not exist yet
+mkdir -p /data/claude
+chown node:node /data/claude
 
 # Initialize .claude.json if it doesn't exist (for MCP config persistence)
 if [ ! -f /home/node/.claude.json ]; then

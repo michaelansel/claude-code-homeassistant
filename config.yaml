@@ -1,5 +1,5 @@
 name: Claude Code Agent
-version: "0.1.5"
+version: "0.1.6"
 slug: claude-code-agent
 description: Run Claude Code agents with c3po coordination
 arch:
