@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.13"
+ADDON_VERSION="0.1.14"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -74,7 +74,7 @@ if [ ! -f /data/.c3po-setup-complete ]; then
     s6-setuidgid node env HOME=/home/node CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
         python3 /tmp/c3po-setup.py --enroll "$C3PO_URL" "$C3PO_TOKEN" \
             --machine "$MACHINE_NAME" \
-            --pattern "ha/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
+            --pattern "${MACHINE_NAME}/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
 
     # Install the plugin for hooks/skills (needed for /c3po auto)
     bashio::log.info "Installing c3po plugin..."
@@ -141,9 +141,11 @@ bashio::log.info "Verifying plugin installation..."
 s6-setuidgid node env HOME=/home/node CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
     claude plugin list 2>&1 | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done
 
-# Export token and project name for claude
+# Export token and c3po identity for claude
 export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 export CLAUDE_PROJECT_NAME="$PROJECT_NAME"
+export C3PO_MACHINE_NAME="$MACHINE_NAME"
+export C3PO_PROJECT_NAME="$PROJECT_NAME"
 export TMPDIR=/home/node/.claude/tmp
 
 # Run claude with /c3po auto as node user
