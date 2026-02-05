@@ -1,6 +1,8 @@
 #!/usr/bin/with-contenv bashio
 
-bashio::log.info "Starting Claude Code agent..."
+ADDON_VERSION="0.1.5"
+bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
+bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
 # Validate OAuth token
 if ! bashio::config.has_value 'oauth_token'; then
@@ -45,57 +47,65 @@ if [ ! -f /data/.c3po-setup-complete ]; then
 
     C3PO_TOKEN=$(bashio::config 'c3po_admin_token')
 
-    # Switch to node user for setup
-    # TMPDIR must be writable by the node user for git clone operations
+    # TMPDIR must be on the same filesystem as ~/.claude for atomic renames
     mkdir -p /home/node/.claude/tmp
     chown node:node /home/node/.claude/tmp
+    export TMPDIR=/home/node/.claude/tmp
+    export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 
-    s6-setuidgid node bash <<EOF
-        set -e
-        export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
-        export TMPDIR=/home/node/.claude/tmp
+    # Debug: filesystem layout
+    bashio::log.info "Debug: symlink target: $(readlink -f /home/node/.claude)"
+    bashio::log.info "Debug: df output:"
+    df -h /home/node /home/node/.claude /tmp 2>&1 | while read line; do bashio::log.info "  $line"; done
+    bashio::log.info "Debug: ls -la /home/node/.claude:"
+    ls -la /home/node/.claude 2>&1 | while read line; do bashio::log.info "  $line"; done
 
-        # Debug: filesystem info
-        echo "=== Debug: filesystem layout ==="
-        echo "HOME=\$HOME"
-        ls -la /home/node/.claude
-        echo "---"
-        df -h /home/node/.claude /tmp /home/node/.claude/tmp 2>&1 || true
-        echo "---"
-        mount | grep -E '(/data|/home|/tmp)' || true
-        echo "=== End debug ==="
+    # Add marketplace (as node user)
+    bashio::log.info "Adding c3po marketplace..."
+    if s6-setuidgid node env TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 | while read line; do bashio::log.info "  marketplace: $line"; done; then
+        bashio::log.info "Marketplace add succeeded"
+    else
+        bashio::log.warning "Marketplace add failed (exit $?), trying update..."
+        s6-setuidgid node env TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            claude plugin marketplace update michaelansel 2>&1 | while read line; do bashio::log.info "  marketplace: $line"; done
+    fi
 
-        # Add marketplace and install plugin
-        echo "Adding c3po marketplace..."
-        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1
-        echo "marketplace add exit code: \$?"
-        echo "Installing c3po plugin..."
-        claude plugin install c3po@michaelansel 2>&1 || claude plugin update c3po@michaelansel 2>&1
-        echo "plugin install exit code: \$?"
+    # Install plugin (as node user)
+    bashio::log.info "Installing c3po plugin..."
+    if s6-setuidgid node env TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+        claude plugin install c3po@michaelansel 2>&1 | while read line; do bashio::log.info "  plugin: $line"; done; then
+        bashio::log.info "Plugin install succeeded"
+    else
+        bashio::log.warning "Plugin install failed, trying update..."
+        s6-setuidgid node env TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            claude plugin update c3po@michaelansel 2>&1 | while read line; do bashio::log.info "  plugin: $line"; done
+    fi
 
-        # Debug: check what was created
-        echo "=== Debug: after plugin install ==="
-        ls -laR /home/node/.claude/plugins/ 2>&1 || echo "No plugins dir exists"
-        echo "=== End debug ==="
+    # Debug: check what was created
+    bashio::log.info "Debug: plugins directory after install:"
+    ls -laR /home/node/.claude/plugins/ 2>&1 | while read line; do bashio::log.info "  $line"; done
+    bashio::log.info "Debug: end plugins listing"
 
-        # Find and run enrollment script
-        SETUP_PY=\$(find /home/node/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
-        if [ -z "\$SETUP_PY" ]; then
-            echo "Error: Could not find c3po setup.py" >&2
-            exit 1
-        fi
+    # Find and run enrollment script
+    SETUP_PY=$(find /home/node/.claude/plugins -path '*/c3po*/setup.py' -print -quit 2>&1)
+    if [ -z "$SETUP_PY" ]; then
+        bashio::log.fatal "Could not find c3po setup.py in /home/node/.claude/plugins"
+        bashio::log.fatal "Plugin installation likely failed due to cross-filesystem issue"
+        exit 1
+    fi
 
-        # Enroll with coordinator - this creates c3po-credentials.json
-        python3 "\$SETUP_PY" --enroll "$C3PO_URL" "$C3PO_TOKEN" \
+    bashio::log.info "Running enrollment from $SETUP_PY..."
+    s6-setuidgid node env CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+        python3 "$SETUP_PY" --enroll "$C3PO_URL" "$C3PO_TOKEN" \
             --machine "$MACHINE_NAME" \
-            --pattern "ha/*"
+            --pattern "ha/*" 2>&1 | while read line; do bashio::log.info "  enroll: $line"; done
 
-        # Verify credentials were created
-        if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
-            echo "Error: c3po enrollment failed - no credentials file created" >&2
-            exit 1
-        fi
-EOF
+    # Verify credentials were created
+    if [ ! -f /home/node/.claude/c3po-credentials.json ]; then
+        bashio::log.fatal "c3po enrollment failed - no credentials file created"
+        exit 1
+    fi
 
     touch /data/.c3po-setup-complete
     bashio::log.info "c3po plugin setup complete"
