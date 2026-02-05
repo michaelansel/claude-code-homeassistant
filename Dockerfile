@@ -38,9 +38,11 @@ COPY rootfs /
 
 # Set up /home/node/.claude to use persistent storage (/data)
 # This matches claude-docker's mount: CONFIG_DIR:/home/node/.claude
+# Also symlink .claude.json (user-scope config where MCP servers are stored)
 RUN mkdir -p /data/claude && \
     chown node:node /data/claude && \
-    ln -sf /data/claude /home/node/.claude
+    ln -sf /data/claude /home/node/.claude && \
+    ln -sf /data/claude-user-config.json /home/node/.claude.json
 
 # Default working directory (will cd to work_dir in run script)
 WORKDIR /data
