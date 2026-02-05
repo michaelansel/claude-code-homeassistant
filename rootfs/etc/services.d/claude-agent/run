@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.7"
+ADDON_VERSION="0.1.8"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -57,6 +57,11 @@ if [ ! -f /data/.c3po-setup-complete ]; then
     chown node:node /home/node/.claude/tmp
     export TMPDIR=/home/node/.claude/tmp
     export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+
+    # Force git to use HTTPS instead of SSH (no SSH keys in container)
+    git config --global url."https://github.com/".insteadOf "git@github.com:"
+    git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+    export GIT_TERMINAL_PROMPT=0
 
     # Debug: filesystem layout
     bashio::log.info "Debug: symlink target: $(readlink -f /home/node/.claude)"
