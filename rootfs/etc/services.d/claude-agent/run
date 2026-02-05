@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.14"
+ADDON_VERSION="0.1.15"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -38,6 +38,18 @@ chown node:node /data/claude
 if [ ! -f /data/claude-user-config.json ]; then
     echo '{}' > /data/claude-user-config.json
     chown node:node /data/claude-user-config.json
+fi
+
+# Re-enroll if agent_pattern in credentials doesn't match current machine_name
+# (handles migration from hardcoded "ha/*" to "${MACHINE_NAME}/*")
+CREDS_FILE="/home/node/.claude/c3po-credentials.json"
+if [ -f "$CREDS_FILE" ] && [ -f /data/.c3po-setup-complete ]; then
+    CURRENT_PATTERN=$(python3 -c "import json; print(json.load(open('$CREDS_FILE')).get('agent_pattern',''))" 2>/dev/null)
+    EXPECTED_PATTERN="${MACHINE_NAME}/*"
+    if [ "$CURRENT_PATTERN" != "$EXPECTED_PATTERN" ]; then
+        bashio::log.info "Agent pattern mismatch: '$CURRENT_PATTERN' != '$EXPECTED_PATTERN', re-enrolling..."
+        rm -f /data/.c3po-setup-complete
+    fi
 fi
 
 # Set up c3po plugin on first run
