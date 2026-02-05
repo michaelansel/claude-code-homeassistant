@@ -47,11 +47,14 @@ if [ ! -f /data/.c3po-setup-complete ]; then
 
     # Switch to node user for setup
     s6-setuidgid node bash <<EOF
+        set -e
         export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 
         # Add marketplace and install plugin
-        claude plugin marketplace add michaelansel/claude-code-plugins 2>/dev/null || true
-        claude plugin install c3po@michaelansel 2>/dev/null || claude plugin update c3po@michaelansel || true
+        echo "Adding c3po marketplace..."
+        claude plugin marketplace add michaelansel/claude-code-plugins
+        echo "Installing c3po plugin..."
+        claude plugin install c3po@michaelansel || claude plugin update c3po@michaelansel
 
         # Find and run enrollment script
         SETUP_PY=\$(find /home/node/.claude/plugins -path '*/c3po*/setup.py' -print -quit)
