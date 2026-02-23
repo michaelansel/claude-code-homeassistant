@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.17"
+ADDON_VERSION="0.1.18"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -143,18 +143,17 @@ CREDS_FILE="/home/node/.claude/c3po-credentials.json"
 if [ -f "$CREDS_FILE" ]; then
     coord_url=$(jq -r '.coordinator_url' "$CREDS_FILE")
     cred_token=$(jq -r '.api_token' "$CREDS_FILE")
-    cred_machine=$(jq -r '.machine_name // "unknown"' "$CREDS_FILE")
     if [ -n "$coord_url" ] && [ "$coord_url" != "null" ] && \
        [ -n "$cred_token" ] && [ "$cred_token" != "null" ]; then
         bashio::log.info "Validating c3po credentials..."
         HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
             -H "Authorization: Bearer $cred_token" \
-            "$coord_url/agent/api/validate?machine_name=$cred_machine" 2>/dev/null) || true
+            "$coord_url/agent/api/validate?machine_name=$MACHINE_NAME" 2>/dev/null) || true
         if [ "$HTTP_STATUS" = "000" ]; then
             bashio::log.fatal "Cannot reach c3po coordinator at $coord_url"
             sleep 30; exit 1
         elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
-            bashio::log.fatal "c3po token invalid/unauthorized for machine '$cred_machine' (HTTP $HTTP_STATUS), re-enrolling on next start"
+            bashio::log.fatal "c3po token invalid/unauthorized for machine '$MACHINE_NAME' (HTTP $HTTP_STATUS), re-enrolling on next start"
             rm -f /data/.c3po-setup-complete
             sleep 30; exit 1
         elif ! echo "$HTTP_STATUS" | grep -q '^2'; then
