@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.15"
+ADDON_VERSION="0.1.16"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -107,6 +107,70 @@ mkdir -p /home/node/.claude/tmp
 chown node:node /home/node/.claude/tmp
 export TMPDIR=/home/node/.claude/tmp
 
+# --- Update plugins (every start) ---
+PLUGIN_DIR="/home/node/.claude/plugins"
+if [ -d "$PLUGIN_DIR" ] && ls "$PLUGIN_DIR"/ >/dev/null 2>&1; then
+    bashio::log.info "Updating plugins..."
+    marketplaces=()
+    for dir in "$PLUGIN_DIR"/*/; do
+        name=$(basename "$dir")
+        if [[ "$name" == *@* ]]; then
+            mp="${name##*@}"
+            if [[ ! " ${marketplaces[*]:-} " =~ " ${mp} " ]]; then
+                marketplaces+=("$mp")
+            fi
+        fi
+    done
+    for mp in ${marketplaces[@]+"${marketplaces[@]}"}; do
+        bashio::log.info "  Updating marketplace: $mp"
+        s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            claude plugin marketplace update "$mp" 2>&1 \
+            | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
+    done
+    for dir in "$PLUGIN_DIR"/*/; do
+        plugin=$(basename "$dir")
+        if [[ "$plugin" == *@* ]]; then
+            bashio::log.info "  Updating plugin: $plugin"
+            s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+                claude plugin update "$plugin" 2>&1 \
+                | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+        fi
+    done
+fi
+
+# --- Validate c3po credentials ---
+CREDS_FILE="/home/node/.claude/c3po-credentials.json"
+if [ -f "$CREDS_FILE" ]; then
+    coord_url=$(jq -r '.coordinator_url' "$CREDS_FILE")
+    cred_token=$(jq -r '.api_token' "$CREDS_FILE")
+    cred_machine=$(jq -r '.machine_name // "unknown"' "$CREDS_FILE")
+    if [ -n "$coord_url" ] && [ "$coord_url" != "null" ] && \
+       [ -n "$cred_token" ] && [ "$cred_token" != "null" ]; then
+        bashio::log.info "Validating c3po credentials..."
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            -H "Authorization: Bearer $cred_token" \
+            "$coord_url/agent/api/validate?machine_name=$cred_machine" 2>/dev/null) || true
+        if [ "$HTTP_STATUS" = "000" ]; then
+            bashio::log.fatal "Cannot reach c3po coordinator at $coord_url"
+            sleep 30; exit 1
+        elif [ "$HTTP_STATUS" = "403" ]; then
+            bashio::log.fatal "c3po token not authorized for machine '$cred_machine'"
+            rm -f /data/.c3po-setup-complete
+            sleep 30; exit 1
+        elif ! echo "$HTTP_STATUS" | grep -q '^2'; then
+            bashio::log.fatal "c3po coordinator returned HTTP $HTTP_STATUS"
+            sleep 30; exit 1
+        fi
+        bashio::log.info "c3po credentials valid"
+    else
+        bashio::log.fatal "c3po credentials incomplete - clear /data/.c3po-setup-complete and restart with admin token"
+        sleep 30; exit 1
+    fi
+else
+    bashio::log.fatal "c3po credentials not found - clear /data/.c3po-setup-complete and restart with admin token"
+    sleep 30; exit 1
+fi
+
 # Ensure MCP is configured (recover if .claude.json was lost before symlink fix)
 # Credentials persist at ~/.claude/c3po-credentials.json (symlinked to /data/claude/)
 CREDS_FILE="/home/node/.claude/c3po-credentials.json"
@@ -160,11 +224,38 @@ export C3PO_MACHINE_NAME="$MACHINE_NAME"
 export C3PO_PROJECT_NAME="$PROJECT_NAME"
 export TMPDIR=/home/node/.claude/tmp
 
+# Run init commands if configured
+if bashio::config.has_value 'init_commands'; then
+    bashio::log.info "Running init commands..."
+    for cmd in $(bashio::config 'init_commands'); do
+        bashio::log.info "  > $cmd"
+        s6-setuidgid node env HOME=/home/node bash -c "$cmd" 2>&1 \
+            | while IFS= read -r line; do bashio::log.info "  init: $line"; done || {
+            bashio::log.fatal "Init command failed: $cmd"
+            exit 1
+        }
+    done
+fi
+
+# Export custom env vars
+if bashio::config.has_value 'env_vars'; then
+    for entry in $(bashio::config 'env_vars'); do
+        export "$entry"
+        bashio::log.info "  env: $entry"
+    done
+fi
+
+# Model override
+MODEL_FLAG=""
+if bashio::config.has_value 'model'; then
+    MODEL_FLAG="--model $(bashio::config 'model')"
+fi
+
 # Run claude with /c3po auto as node user
 bashio::log.info "Starting /c3po auto in ${WORK_DIR}..."
 cd "$WORK_DIR"
 export HOME=/home/node
-s6-setuidgid node claude --dangerously-skip-permissions -p "/c3po auto" 2>&1 \
+s6-setuidgid node claude --dangerously-skip-permissions $MODEL_FLAG -p "/c3po auto" 2>&1 \
     | while IFS= read -r line; do bashio::log.info "  claude: $line"; done
 CLAUDE_RC=${PIPESTATUS[0]}
 bashio::log.warning "Claude exited with code ${CLAUDE_RC}"

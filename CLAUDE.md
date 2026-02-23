@@ -39,8 +39,12 @@ There are no tests, linters, or formatters configured. Testing is manual per TES
 1. S6 starts the `run` script
 2. Validates OAuth token format (`sk-ant-*` or `sk-at-*`) and c3po URL using `bashio`
 3. On first run only: installs c3po plugin, runs enrollment with admin token, sets flag `/data/.c3po-setup-complete`
-4. Executes `claude --dangerously-skip-permissions -p "/c3po auto"` as the `node` user
-5. S6 auto-restarts on crash; health check runs `pgrep -f "claude.*c3po"` every 30s
+4. Updates installed plugins (every start)
+5. Validates c3po credentials against coordinator (every start); clears setup flag on 403 for auto re-enrollment
+6. Runs user-configured `init_commands` as `node` user
+7. Exports user-configured `env_vars`
+8. Executes `claude --dangerously-skip-permissions [--model MODEL] -p "/c3po auto"` as the `node` user
+9. S6 auto-restarts on crash; health check runs `pgrep -f "claude.*c3po"` every 30s
 
 ### Storage Mapping
 
@@ -70,4 +74,4 @@ fi
 ## Configuration Options
 
 Required: `oauth_token`, `c3po_coordinator_url`
-Optional: `c3po_admin_token` (first run only), `work_dir` (default `/config`), `project_name` (default `homeassistant`), `machine_name` (default `homeassistant`)
+Optional: `c3po_admin_token` (first run only), `work_dir` (default `/config`), `project_name` (default `homeassistant`), `machine_name` (default `homeassistant`), `model` (Claude model override, e.g. `opus`), `env_vars` (list of `KEY=VALUE` strings), `init_commands` (list of shell commands run before launch)
