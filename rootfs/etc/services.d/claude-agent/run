@@ -153,8 +153,8 @@ if [ -f "$CREDS_FILE" ]; then
         if [ "$HTTP_STATUS" = "000" ]; then
             bashio::log.fatal "Cannot reach c3po coordinator at $coord_url"
             sleep 30; exit 1
-        elif [ "$HTTP_STATUS" = "403" ]; then
-            bashio::log.fatal "c3po token not authorized for machine '$cred_machine'"
+        elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
+            bashio::log.fatal "c3po token invalid/unauthorized for machine '$cred_machine' (HTTP $HTTP_STATUS), re-enrolling on next start"
             rm -f /data/.c3po-setup-complete
             sleep 30; exit 1
         elif ! echo "$HTTP_STATUS" | grep -q '^2'; then
