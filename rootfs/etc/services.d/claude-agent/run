@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.1.18"
+ADDON_VERSION="0.1.19"
 bashio::log.info "Starting Claude Code agent v${ADDON_VERSION}..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -89,13 +89,18 @@ if [ ! -f /data/.c3po-setup-complete ]; then
             --pattern "${MACHINE_NAME}/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
 
     # Install the plugin for hooks/skills (needed for /c3po auto)
+    # Skip if already installed — plugins persist in /data across re-enrollments
     bashio::log.info "Installing c3po plugin..."
-    s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
-    s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        claude plugin install c3po@michaelansel 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+    if [ ! -d "/home/node/.claude/plugins/c3po@michaelansel" ]; then
+        s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
+            | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
+        s6-setuidgid node env HOME=/home/node TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+            claude plugin install c3po@michaelansel 2>&1 \
+            | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+    else
+        bashio::log.info "  c3po@michaelansel already installed, skipping"
+    fi
 
     touch /data/.c3po-setup-complete
     bashio::log.info "c3po setup complete"
