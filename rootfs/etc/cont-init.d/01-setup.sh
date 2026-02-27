@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.4"
+ADDON_VERSION="0.2.5"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -37,6 +37,14 @@ if [ ! -f /data/claude-user-config.json ]; then
     echo '{}' > /data/claude-user-config.json
 fi
 
+# Migration: v0.1.x ran as node user; v0.2.x runs as root.
+# Force plugin reinstall once so skills are registered for the root user context.
+# Does NOT clear the enrollment flag — credentials are still valid.
+if [ -f /data/.c3po-setup-complete ] && [ ! -f /data/.c3po-setup-v2 ]; then
+    bashio::log.info "Migrating from v0.1.x: forcing plugin reinstall for root user context..."
+    rm -f /data/.c3po-plugin-installed
+fi
+
 # Re-enroll if agent_pattern in credentials doesn't match current machine_name
 # (handles migration from hardcoded "ha/*" to "${MACHINE_NAME}/*")
 CREDS_FILE="/root/.claude/c3po-credentials.json"
@@ -49,11 +57,11 @@ if [ -f "$CREDS_FILE" ] && [ -f /data/.c3po-setup-complete ]; then
     fi
 fi
 
-# Set up c3po plugin on first run
-# After enrollment, c3po stores credentials in /root/.claude/c3po-credentials.json
+# Enroll with c3po coordinator on first run (requires admin token)
+# After enrollment, credentials are stored in /root/.claude/c3po-credentials.json
 # which persists via symlink to /data/claude/c3po-credentials.json
 if [ ! -f /data/.c3po-setup-complete ]; then
-    bashio::log.info "Setting up c3po plugin (first run)..."
+    bashio::log.info "Enrolling with c3po coordinator (first run)..."
 
     # Admin token only required for initial enrollment
     if ! bashio::config.has_value 'c3po_admin_token'; then
@@ -83,23 +91,27 @@ if [ ! -f /data/.c3po-setup-complete ]; then
         --machine "$MACHINE_NAME" \
         --pattern "${MACHINE_NAME}/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
 
-    # Install the plugin for hooks/skills (needed for /c3po auto)
-    # Skip if already installed — plugins persist in /data across re-enrollments
-    bashio::log.info "Installing c3po plugin..."
-    if [ ! -d "/root/.claude/plugins/c3po@michaelansel" ]; then
-        TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-            claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
-            | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
-        TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-            claude plugin install c3po@michaelansel 2>&1 \
-            | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
-    else
-        bashio::log.info "  c3po@michaelansel already installed, skipping"
-    fi
-
     touch /data/.c3po-setup-complete
-    bashio::log.info "c3po setup complete"
+    bashio::log.info "Enrollment complete"
     bashio::log.info "You can now remove c3po_admin_token from add-on config (optional)"
+fi
+
+# Install c3po plugin if not yet done for this user context (flag: .c3po-setup-v2)
+# Runs on: fresh installs, and once on upgrade from v0.1.x (migration cleared the flag above)
+if [ ! -f /data/.c3po-plugin-installed ]; then
+    bashio::log.info "Installing c3po plugin..."
+    mkdir -p /root/.claude/tmp
+    export TMPDIR=/root/.claude/tmp
+    export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+    TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
+        | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
+    TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
+        claude plugin install c3po@michaelansel 2>&1 \
+        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+    touch /data/.c3po-plugin-installed
+    touch /data/.c3po-setup-v2
+    bashio::log.info "Plugin installed"
 fi
 
 # Ensure TMPDIR is on same filesystem as ~/.claude (needed for claude commands)
