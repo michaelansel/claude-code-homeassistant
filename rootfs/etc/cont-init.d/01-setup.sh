@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.7"
+ADDON_VERSION="0.2.8"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -91,16 +91,17 @@ else
 fi
 
 # --- Ensure c3po plugin is installed (every start) ---
-# Idempotent: fast if already installed, fixes it if missing or broken.
-bashio::log.info "Ensuring c3po plugin is installed..."
-claude plugin install c3po@michaelansel 2>&1 \
-    | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || {
-    bashio::log.info "Plugin install failed — adding marketplace and retrying..."
+# Refresh marketplace index first, then install/reinstall plugin.
+bashio::log.info "Refreshing marketplace index..."
+claude plugin marketplace update michaelansel 2>&1 \
+    | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || {
+    bashio::log.info "Marketplace update failed — adding marketplace..."
     claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
         | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
-    claude plugin install c3po@michaelansel 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
 }
+bashio::log.info "Ensuring c3po plugin is installed..."
+claude plugin install c3po@michaelansel 2>&1 \
+    | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
 
 # --- Update installed plugins (every start) ---
 PLUGIN_DIR="/root/.claude/plugins"
