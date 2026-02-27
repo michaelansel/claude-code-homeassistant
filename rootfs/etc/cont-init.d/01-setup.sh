@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.8"
+ADDON_VERSION="0.2.9"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -36,6 +36,12 @@ mkdir -p /root/.claude/tmp
 export TMPDIR=/root/.claude/tmp
 export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 
+# Force git to use HTTPS instead of SSH (no SSH keys in container)
+# Must run every start since /root/.gitconfig is ephemeral
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+export GIT_TERMINAL_PROMPT=0
+
 # --- Enrollment (first run only, requires admin token) ---
 CREDS_FILE="/root/.claude/c3po-credentials.json"
 
@@ -55,8 +61,6 @@ if [ ! -f /data/.c3po-setup-complete ]; then
         exit 1
     fi
     C3PO_TOKEN=$(bashio::config 'c3po_admin_token')
-    git config --global url."https://github.com/".insteadOf "git@github.com:" 2>/dev/null || true
-    export GIT_TERMINAL_PROMPT=0
     curl -fsSL https://raw.githubusercontent.com/michaelansel/c3po/main/setup.py -o /tmp/c3po-setup.py
     python3 /tmp/c3po-setup.py --enroll "$C3PO_URL" "$C3PO_TOKEN" \
         --machine "$MACHINE_NAME" --pattern "${MACHINE_NAME}/*" \
@@ -91,17 +95,16 @@ else
 fi
 
 # --- Ensure c3po plugin is installed (every start) ---
-# Refresh marketplace index first, then install/reinstall plugin.
-bashio::log.info "Refreshing marketplace index..."
-claude plugin marketplace update michaelansel 2>&1 \
-    | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || {
-    bashio::log.info "Marketplace update failed — adding marketplace..."
-    claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
-}
-bashio::log.info "Ensuring c3po plugin is installed..."
-claude plugin install c3po@michaelansel 2>&1 \
-    | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+# Mirror claude-code-docker's setup-c3po pattern exactly:
+#   marketplace: try update (fast), fall back to add (first time)
+#   plugin:      try update (fast), fall back to install (first time)
+bashio::log.info "Updating/installing c3po plugin..."
+claude plugin marketplace update michaelansel 2>/dev/null \
+    || claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
+        | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done
+claude plugin update c3po@michaelansel 2>/dev/null \
+    || claude plugin install c3po@michaelansel 2>&1 \
+        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done
 
 # --- Update installed plugins (every start) ---
 PLUGIN_DIR="/root/.claude/plugins"
