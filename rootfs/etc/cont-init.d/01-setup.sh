@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.6"
+ADDON_VERSION="0.2.7"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -25,101 +25,84 @@ fi
 C3PO_URL=$(bashio::config 'c3po_coordinator_url')
 MACHINE_NAME=$(bashio::config 'machine_name')
 
-# Ensure persistent storage exists (/root/.claude is a symlink to /data/claude)
-# /data is a volume mounted at runtime, so the target dir may not exist yet
-mkdir -p /data/claude
-mkdir -p /data/sessions
-
-# Initialize .claude.json persistent config if it doesn't exist
-# /root/.claude.json is symlinked to /data/claude-user-config.json (in Dockerfile)
-# This file stores user-scope MCP server config from `claude mcp add`
+# Ensure persistent storage exists
+mkdir -p /data/claude /data/sessions
 if [ ! -f /data/claude-user-config.json ]; then
     echo '{}' > /data/claude-user-config.json
 fi
 
-# Migration: v0.1.x ran as node user; v0.2.x runs as root.
-# Wipe the entire plugins directory and force a clean reinstall.
-# Does NOT clear the enrollment flag — credentials are still valid.
-if [ -f /data/.c3po-setup-complete ] && [ ! -f /data/.c3po-setup-v2 ]; then
-    bashio::log.info "Migrating from v0.1.x: wiping plugins directory for clean root-user reinstall..."
-    rm -rf /data/claude/plugins
-    rm -f /data/.c3po-plugin-installed
-fi
+# TMPDIR must be on the same filesystem as ~/.claude for atomic renames
+mkdir -p /root/.claude/tmp
+export TMPDIR=/root/.claude/tmp
+export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
 
-# Re-enroll if agent_pattern in credentials doesn't match current machine_name
-# (handles migration from hardcoded "ha/*" to "${MACHINE_NAME}/*")
+# --- Enrollment (first run only, requires admin token) ---
 CREDS_FILE="/root/.claude/c3po-credentials.json"
+
+# Re-enroll if agent_pattern doesn't match current machine_name
 if [ -f "$CREDS_FILE" ] && [ -f /data/.c3po-setup-complete ]; then
     CURRENT_PATTERN=$(python3 -c "import json; print(json.load(open('$CREDS_FILE')).get('agent_pattern',''))" 2>/dev/null)
-    EXPECTED_PATTERN="${MACHINE_NAME}/*"
-    if [ "$CURRENT_PATTERN" != "$EXPECTED_PATTERN" ]; then
-        bashio::log.info "Agent pattern mismatch: '$CURRENT_PATTERN' != '$EXPECTED_PATTERN', re-enrolling..."
+    if [ "$CURRENT_PATTERN" != "${MACHINE_NAME}/*" ]; then
+        bashio::log.info "Agent pattern mismatch ('$CURRENT_PATTERN'), re-enrolling..."
         rm -f /data/.c3po-setup-complete
     fi
 fi
 
-# Enroll with c3po coordinator on first run (requires admin token)
-# After enrollment, credentials are stored in /root/.claude/c3po-credentials.json
-# which persists via symlink to /data/claude/c3po-credentials.json
 if [ ! -f /data/.c3po-setup-complete ]; then
-    bashio::log.info "Enrolling with c3po coordinator (first run)..."
-
-    # Admin token only required for initial enrollment
+    bashio::log.info "First-run enrollment..."
     if ! bashio::config.has_value 'c3po_admin_token'; then
         bashio::log.fatal "c3po admin token required for first-time setup"
         exit 1
     fi
-
     C3PO_TOKEN=$(bashio::config 'c3po_admin_token')
-
-    # TMPDIR must be on the same filesystem as ~/.claude for atomic renames
-    mkdir -p /root/.claude/tmp
-    export TMPDIR=/root/.claude/tmp
-    export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
-
-    # Force git to use HTTPS instead of SSH (no SSH keys in container)
-    git config --global url."https://github.com/".insteadOf "git@github.com:"
-    git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+    git config --global url."https://github.com/".insteadOf "git@github.com:" 2>/dev/null || true
     export GIT_TERMINAL_PROMPT=0
-
-    # Download setup.py and run enrollment (lightweight, avoids plugin system OOM)
-    bashio::log.info "Downloading c3po setup script..."
     curl -fsSL https://raw.githubusercontent.com/michaelansel/c3po/main/setup.py -o /tmp/c3po-setup.py
-    bashio::log.info "Download complete"
-
-    bashio::log.info "Running enrollment..."
     python3 /tmp/c3po-setup.py --enroll "$C3PO_URL" "$C3PO_TOKEN" \
-        --machine "$MACHINE_NAME" \
-        --pattern "${MACHINE_NAME}/*" 2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
-
+        --machine "$MACHINE_NAME" --pattern "${MACHINE_NAME}/*" \
+        2>&1 | while IFS= read -r line; do bashio::log.info "  enroll: $line"; done
     touch /data/.c3po-setup-complete
-    bashio::log.info "Enrollment complete"
-    bashio::log.info "You can now remove c3po_admin_token from add-on config (optional)"
+    bashio::log.info "Enrollment complete (you can now remove c3po_admin_token)"
 fi
 
-# Install c3po plugin if not yet done for this user context (flag: .c3po-setup-v2)
-# Runs on: fresh installs, and once on upgrade from v0.1.x (migration cleared the flag above)
-if [ ! -f /data/.c3po-plugin-installed ]; then
-    bashio::log.info "Installing c3po plugin..."
-    mkdir -p /root/.claude/tmp
-    export TMPDIR=/root/.claude/tmp
-    export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
-    TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
+# --- Validate c3po credentials (every start) ---
+if [ -f "$CREDS_FILE" ]; then
+    coord_url=$(jq -r '.coordinator_url' "$CREDS_FILE")
+    cred_token=$(jq -r '.api_token' "$CREDS_FILE")
+    bashio::log.info "Validating c3po credentials..."
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+        -H "Authorization: Bearer $cred_token" \
+        "$coord_url/agent/api/validate?machine_name=$MACHINE_NAME" 2>/dev/null) || true
+    if [ "$HTTP_STATUS" = "000" ]; then
+        bashio::log.fatal "Cannot reach c3po coordinator at $coord_url"
+        sleep 30; exit 1
+    elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
+        bashio::log.fatal "c3po credentials invalid (HTTP $HTTP_STATUS), will re-enroll on next start"
+        rm -f /data/.c3po-setup-complete
+        sleep 30; exit 1
+    elif ! echo "$HTTP_STATUS" | grep -q '^2'; then
+        bashio::log.fatal "c3po coordinator returned HTTP $HTTP_STATUS"
+        sleep 30; exit 1
+    fi
+    bashio::log.info "c3po credentials valid"
+else
+    bashio::log.fatal "c3po credentials not found - clear /data/.c3po-setup-complete and restart with admin token"
+    sleep 30; exit 1
+fi
+
+# --- Ensure c3po plugin is installed (every start) ---
+# Idempotent: fast if already installed, fixes it if missing or broken.
+bashio::log.info "Ensuring c3po plugin is installed..."
+claude plugin install c3po@michaelansel 2>&1 \
+    | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || {
+    bashio::log.info "Plugin install failed — adding marketplace and retrying..."
+    claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
         | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
-    TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-        claude plugin install c3po@michaelansel 2>&1 \
+    claude plugin install c3po@michaelansel 2>&1 \
         | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
-    touch /data/.c3po-plugin-installed
-    touch /data/.c3po-setup-v2
-    bashio::log.info "Plugin installed"
-fi
+}
 
-# Ensure TMPDIR is on same filesystem as ~/.claude (needed for claude commands)
-mkdir -p /root/.claude/tmp
-export TMPDIR=/root/.claude/tmp
-
-# --- Update plugins (every start) ---
+# --- Update installed plugins (every start) ---
 PLUGIN_DIR="/root/.claude/plugins"
 if [ -d "$PLUGIN_DIR" ] && ls "$PLUGIN_DIR"/ >/dev/null 2>&1; then
     bashio::log.info "Updating plugins..."
@@ -134,107 +117,47 @@ if [ -d "$PLUGIN_DIR" ] && ls "$PLUGIN_DIR"/ >/dev/null 2>&1; then
         fi
     done
     for mp in ${marketplaces[@]+"${marketplaces[@]}"}; do
-        bashio::log.info "  Updating marketplace: $mp"
-        TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-            claude plugin marketplace update "$mp" 2>&1 \
-            | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done || true
+        claude plugin marketplace update "$mp" 2>&1 \
+            | while IFS= read -r line; do bashio::log.info "  update marketplace $mp: $line"; done || true
     done
     for dir in "$PLUGIN_DIR"/*/; do
         plugin=$(basename "$dir")
         if [[ "$plugin" == *@* ]]; then
-            bashio::log.info "  Updating plugin: $plugin"
-            TMPDIR="$TMPDIR" CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-                claude plugin update "$plugin" 2>&1 \
-                | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done || true
+            claude plugin update "$plugin" 2>&1 \
+                | while IFS= read -r line; do bashio::log.info "  update plugin $plugin: $line"; done || true
         fi
     done
 fi
 
-# --- Validate c3po credentials ---
-CREDS_FILE="/root/.claude/c3po-credentials.json"
-if [ -f "$CREDS_FILE" ]; then
-    coord_url=$(jq -r '.coordinator_url' "$CREDS_FILE")
-    cred_token=$(jq -r '.api_token' "$CREDS_FILE")
-    if [ -n "$coord_url" ] && [ "$coord_url" != "null" ] && \
-       [ -n "$cred_token" ] && [ "$cred_token" != "null" ]; then
-        bashio::log.info "Validating c3po credentials..."
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
-            -H "Authorization: Bearer $cred_token" \
-            "$coord_url/agent/api/validate?machine_name=$MACHINE_NAME" 2>/dev/null) || true
-        if [ "$HTTP_STATUS" = "000" ]; then
-            bashio::log.fatal "Cannot reach c3po coordinator at $coord_url"
-            sleep 30; exit 1
-        elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "403" ]; then
-            bashio::log.fatal "c3po token invalid/unauthorized for machine '$MACHINE_NAME' (HTTP $HTTP_STATUS), re-enrolling on next start"
-            rm -f /data/.c3po-setup-complete
-            sleep 30; exit 1
-        elif ! echo "$HTTP_STATUS" | grep -q '^2'; then
-            bashio::log.fatal "c3po coordinator returned HTTP $HTTP_STATUS"
-            sleep 30; exit 1
-        fi
-        bashio::log.info "c3po credentials valid"
-    else
-        bashio::log.fatal "c3po credentials incomplete - clear /data/.c3po-setup-complete and restart with admin token"
-        sleep 30; exit 1
-    fi
-else
-    bashio::log.fatal "c3po credentials not found - clear /data/.c3po-setup-complete and restart with admin token"
-    sleep 30; exit 1
+# --- Ensure MCP server is configured ---
+MCP_CHECK=$(claude mcp list 2>&1)
+if echo "$MCP_CHECK" | grep -q "No MCP servers"; then
+    bashio::log.info "MCP not configured, re-adding from credentials..."
+    CRED_URL=$(python3 -c "import json; print(json.load(open('$CREDS_FILE'))['coordinator_url'])")
+    CRED_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS_FILE')).get('api_token',''))")
+    MACHINE_HDR='${C3PO_MACHINE_NAME:-'"${MACHINE_NAME}"'}'
+    PROJECT_HDR='${C3PO_PROJECT_NAME:-${PWD##*/}}'
+    SESSION_HDR='${C3PO_SESSION_ID:-$$}'
+    claude mcp add c3po "${CRED_URL}/agent/mcp" -t http -s user \
+        -H "X-Machine-Name: ${MACHINE_HDR}" \
+        -H "X-Project-Name: ${PROJECT_HDR}" \
+        -H "X-Session-ID: ${SESSION_HDR}" \
+        -H "Authorization: Bearer ${CRED_TOKEN}" \
+        2>&1 | while IFS= read -r line; do bashio::log.info "  mcp: $line"; done
 fi
 
-# Ensure MCP is configured (recover if .claude.json was lost before symlink fix)
-# Credentials persist at ~/.claude/c3po-credentials.json (symlinked to /data/claude/)
-CREDS_FILE="/root/.claude/c3po-credentials.json"
-if [ -f "$CREDS_FILE" ]; then
-    MCP_CHECK=$(CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" claude mcp list 2>&1)
-    if echo "$MCP_CHECK" | grep -q "No MCP servers"; then
-        bashio::log.info "MCP not configured, re-adding from saved credentials..."
-        CRED_URL=$(python3 -c "import json; print(json.load(open('$CREDS_FILE'))['coordinator_url'])")
-        CRED_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS_FILE')).get('api_token',''))")
+# --- Log current state ---
+bashio::log.info "MCP servers:"
+claude mcp list 2>&1 | while IFS= read -r line; do bashio::log.info "  $line"; done
+bashio::log.info "Plugins:"
+claude plugin list 2>&1 | while IFS= read -r line; do bashio::log.info "  $line"; done
 
-        # Build claude mcp add command
-        # Header values use ${VAR:-default} syntax - these are stored literally by claude
-        # and expanded at MCP invocation time, not now
-        PROJECT_NAME=$(bashio::config 'project_name')
-        MACHINE_HDR='${C3PO_MACHINE_NAME:-'"${MACHINE_NAME}"'}'
-        PROJECT_HDR='${C3PO_PROJECT_NAME:-${PWD##*/}}'
-        SESSION_HDR='${C3PO_SESSION_ID:-$$}'
-
-        if [ -n "$CRED_TOKEN" ]; then
-            CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-                claude mcp add c3po "${CRED_URL}/agent/mcp" -t http -s user \
-                    -H "X-Machine-Name: ${MACHINE_HDR}" \
-                    -H "X-Project-Name: ${PROJECT_HDR}" \
-                    -H "X-Session-ID: ${SESSION_HDR}" \
-                    -H "Authorization: Bearer ${CRED_TOKEN}" \
-                2>&1 | while IFS= read -r line; do bashio::log.info "  mcp-fix: $line"; done
-        else
-            CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-                claude mcp add c3po "${CRED_URL}/agent/mcp" -t http -s user \
-                    -H "X-Machine-Name: ${MACHINE_HDR}" \
-                    -H "X-Project-Name: ${PROJECT_HDR}" \
-                    -H "X-Session-ID: ${SESSION_HDR}" \
-                2>&1 | while IFS= read -r line; do bashio::log.info "  mcp-fix: $line"; done
-        fi
-    fi
-fi
-
-# Verify setup using claude's own commands
-bashio::log.info "Verifying MCP configuration..."
-CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-    claude mcp list 2>&1 | while IFS= read -r line; do bashio::log.info "  mcp: $line"; done
-
-bashio::log.info "Verifying plugin installation..."
-CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" \
-    claude plugin list 2>&1 | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done
-
-# Run init commands if configured
+# --- Run init commands ---
 if bashio::config.has_value 'init_commands'; then
     bashio::log.info "Running init commands..."
     for cmd in $(bashio::config 'init_commands'); do
         bashio::log.info "  > $cmd"
-        bash -c "$cmd" 2>&1 \
-            | while IFS= read -r line; do bashio::log.info "  init: $line"; done || {
+        bash -c "$cmd" 2>&1 | while IFS= read -r line; do bashio::log.info "  init: $line"; done || {
             bashio::log.fatal "Init command failed: $cmd"
             exit 1
         }
