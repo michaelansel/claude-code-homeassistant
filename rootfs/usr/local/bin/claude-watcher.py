@@ -23,11 +23,14 @@ def load_credentials(creds_file: str) -> dict:
 
 
 def make_request(url: str, method: str = "GET", token: str = None,
-                 data: bytes = None, timeout: int = 35) -> tuple[int, dict | None]:
+                 data: bytes = None, timeout: int = 35,
+                 machine_name: str = None) -> tuple[int, dict | None]:
     """Make an HTTP request. Returns (status_code, response_body_or_None)."""
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if machine_name:
+        headers["X-Machine-Name"] = machine_name
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -44,7 +47,7 @@ def make_request(url: str, method: str = "GET", token: str = None,
             return e.code, None
 
 
-def claim_name(coordinator_url: str, token: str) -> None:
+def claim_name(coordinator_url: str, token: str, machine_name: str) -> None:
     """Idempotent cold-start: register then unregister-with-keep to enter watching state."""
     print("[watcher] Claiming agent name (watching state)...", flush=True)
 
@@ -55,6 +58,7 @@ def claim_name(coordinator_url: str, token: str) -> None:
         token=token,
         data=b"{}",
         timeout=15,
+        machine_name=machine_name,
     )
     if status not in (200, 201, 409):  # 409 = already registered, that's fine
         print(f"[watcher] Warning: register returned HTTP {status}: {body}", flush=True)
@@ -68,6 +72,7 @@ def claim_name(coordinator_url: str, token: str) -> None:
         token=token,
         data=b"{}",
         timeout=15,
+        machine_name=machine_name,
     )
     if status not in (200, 204):
         print(f"[watcher] Warning: unregister(keep) returned HTTP {status}: {body}", flush=True)
@@ -75,11 +80,13 @@ def claim_name(coordinator_url: str, token: str) -> None:
         print(f"[watcher] Watching state set (HTTP {status})", flush=True)
 
 
-def wait_for_message(coordinator_url: str, token: str, poll_timeout: int = 30) -> str:
+def wait_for_message(coordinator_url: str, token: str, machine_name: str,
+                     poll_timeout: int = 30) -> str:
     """Poll /agent/api/wait. Returns 'received', 'timeout', or 'retry:N'."""
     url = f"{coordinator_url}/agent/api/wait?timeout={poll_timeout}"
     try:
-        status, body = make_request(url, token=token, timeout=poll_timeout + 10)
+        status, body = make_request(url, token=token, timeout=poll_timeout + 10,
+                                    machine_name=machine_name)
         if status == 200 and isinstance(body, dict):
             return body.get("status", "timeout")
         if status == 429:
@@ -191,25 +198,36 @@ def main():
         print("[watcher] Fatal: credentials missing coordinator_url or api_token", flush=True)
         sys.exit(1)
 
+    # Machine name: prefer env var (set by run script), fall back to credentials agent_pattern
+    machine_name = os.environ.get("C3PO_MACHINE_NAME", "")
+    if not machine_name:
+        agent_pattern = creds.get("agent_pattern", "")
+        machine_name = agent_pattern.split("/")[0] if agent_pattern else ""
+    if not machine_name:
+        print("[watcher] Fatal: cannot determine machine name (set C3PO_MACHINE_NAME env var)", flush=True)
+        sys.exit(1)
+
     print(f"[watcher] Coordinator: {coordinator_url}", flush=True)
+    print(f"[watcher] Machine name: {machine_name}", flush=True)
 
     # Build env for Claude sessions (inherit current env + add session-specific vars)
     base_env = os.environ.copy()
     base_env["C3PO_KEEP_REGISTERED"] = "1"
 
     # Claim watching state
-    claim_name(coordinator_url, token)
+    claim_name(coordinator_url, token, machine_name)
 
     print("[watcher] Entering poll loop...", flush=True)
 
     while True:
-        result = wait_for_message(coordinator_url, token)
+        result = wait_for_message(coordinator_url, token, machine_name)
 
         if result == "received":
             print("[watcher] Message received, launching session...", flush=True)
             # Re-register as active before launching session
             make_request(f"{coordinator_url}/agent/api/register",
-                         method="POST", token=token, data=b"{}", timeout=10)
+                         method="POST", token=token, data=b"{}", timeout=10,
+                         machine_name=machine_name)
             try:
                 launch_session(
                     work_dir=args.work_dir,
@@ -221,7 +239,7 @@ def main():
             except Exception as e:
                 print(f"[watcher] Session error: {e}", flush=True)
             # Return to watching state after session
-            claim_name(coordinator_url, token)
+            claim_name(coordinator_url, token, machine_name)
 
         elif result == "timeout":
             # Normal poll timeout, loop immediately
@@ -240,7 +258,7 @@ def main():
             time.sleep(10)
             # Try to re-enter watching state after network recovery
             try:
-                claim_name(coordinator_url, token)
+                claim_name(coordinator_url, token, machine_name)
             except Exception as e:
                 print(f"[watcher] Failed to reclaim watching state: {e}", flush=True)
 
