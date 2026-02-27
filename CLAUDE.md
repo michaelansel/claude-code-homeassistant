@@ -24,7 +24,15 @@ git tag -a v0.x.0 -m "Release v0.x.0"
 git push --follow-tags
 ```
 
-There are no tests, linters, or formatters configured. Testing is manual per TESTING.md.
+## Testing
+
+Test watcher protocol locally (no HA instance needed):
+
+```bash
+bash tests/test_watcher.sh
+```
+
+This starts a mock c3po coordinator (`tests/mock_coordinator.py`) and runs `claude-watcher.py` against it, verifying all headers and the full register → watch → trigger → session → rewatch flow. Always run this before pushing watcher changes.
 
 ## Architecture
 
