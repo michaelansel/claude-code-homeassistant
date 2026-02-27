@@ -12,7 +12,6 @@ import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -24,13 +23,13 @@ def load_credentials(creds_file: str) -> dict:
 
 def make_request(url: str, method: str = "GET", token: str = None,
                  data: bytes = None, timeout: int = 35,
-                 machine_name: str = None) -> tuple[int, dict | None]:
+                 extra_headers: dict = None) -> tuple[int, dict | None]:
     """Make an HTTP request. Returns (status_code, response_body_or_None)."""
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    if machine_name:
-        headers["X-Machine-Name"] = machine_name
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -47,46 +46,66 @@ def make_request(url: str, method: str = "GET", token: str = None,
             return e.code, None
 
 
-def claim_name(coordinator_url: str, token: str, machine_name: str) -> None:
-    """Idempotent cold-start: register then unregister-with-keep to enter watching state."""
-    print("[watcher] Claiming agent name (watching state)...", flush=True)
-
-    # Register
+def register_agent(coordinator_url: str, token: str,
+                   machine_name: str, project_name: str) -> str | None:
+    """Register the agent. Returns the assigned agent ID (e.g. 'haos/homeassistant')."""
     status, body = make_request(
         f"{coordinator_url}/agent/api/register",
         method="POST",
         token=token,
         data=b"{}",
         timeout=15,
-        machine_name=machine_name,
+        extra_headers={
+            "X-Machine-Name": machine_name,
+            "X-Project-Name": project_name,
+        },
     )
-    if status not in (200, 201, 409):  # 409 = already registered, that's fine
-        print(f"[watcher] Warning: register returned HTTP {status}: {body}", flush=True)
-    else:
-        print(f"[watcher] Registered (HTTP {status})", flush=True)
+    if status in (200, 201):
+        agent_id = body.get("id") if isinstance(body, dict) else None
+        print(f"[watcher] Registered as '{agent_id}' (HTTP {status})", flush=True)
+        return agent_id
+    if status == 409:
+        # Already registered — agent_id is still machine/project
+        agent_id = f"{machine_name}/{project_name}"
+        print(f"[watcher] Already registered as '{agent_id}' (HTTP 409)", flush=True)
+        return agent_id
+    print(f"[watcher] Register failed HTTP {status}: {body}", flush=True)
+    return None
 
-    # Unregister with keep=true → transitions to "watching" status
+
+def enter_watching_state(coordinator_url: str, token: str, agent_id: str) -> bool:
+    """Unregister with keep=true to enter watching state. Uses full assigned agent ID."""
     status, body = make_request(
         f"{coordinator_url}/agent/api/unregister?keep=true",
         method="POST",
         token=token,
         data=b"{}",
         timeout=15,
-        machine_name=machine_name,
+        extra_headers={"X-Machine-Name": agent_id},
     )
-    if status not in (200, 204):
-        print(f"[watcher] Warning: unregister(keep) returned HTTP {status}: {body}", flush=True)
-    else:
-        print(f"[watcher] Watching state set (HTTP {status})", flush=True)
+    if status in (200, 204):
+        print(f"[watcher] Watching state set for '{agent_id}' (HTTP {status})", flush=True)
+        return True
+    print(f"[watcher] unregister(keep) failed HTTP {status}: {body}", flush=True)
+    return False
 
 
-def wait_for_message(coordinator_url: str, token: str, machine_name: str,
-                     poll_timeout: int = 30) -> str:
-    """Poll /agent/api/wait. Returns 'received', 'timeout', or 'retry:N'."""
+def claim_watching_state(coordinator_url: str, token: str,
+                         machine_name: str, project_name: str) -> str | None:
+    """Register then immediately enter watching state. Returns assigned agent ID."""
+    print("[watcher] Claiming watching state...", flush=True)
+    agent_id = register_agent(coordinator_url, token, machine_name, project_name)
+    if agent_id is None:
+        return None
+    enter_watching_state(coordinator_url, token, agent_id)
+    return agent_id
+
+
+def wait_for_message(coordinator_url: str, token: str, poll_timeout: int = 30) -> str:
+    """Poll /agent/api/wait. Returns 'received', 'timeout', 'retry:N', or 'error'."""
     url = f"{coordinator_url}/agent/api/wait?timeout={poll_timeout}"
     try:
-        status, body = make_request(url, token=token, timeout=poll_timeout + 10,
-                                    machine_name=machine_name)
+        status, body = make_request(url, token=token, timeout=poll_timeout + 10)
         if status == 200 and isinstance(body, dict):
             return body.get("status", "timeout")
         if status == 429:
@@ -94,7 +113,6 @@ def wait_for_message(coordinator_url: str, token: str, machine_name: str,
             if isinstance(body, dict):
                 retry_after = int(body.get("retry_after", 5))
             return f"retry:{retry_after}"
-        # Other non-200 but no exception
         print(f"[watcher] Unexpected wait response HTTP {status}: {body}", flush=True)
         return "timeout"
     except (urllib.error.URLError, OSError, TimeoutError) as e:
@@ -146,18 +164,13 @@ def launch_session(work_dir: str, model_flag: str, session_dir: str,
 
     print(f"[watcher] Session exited with code {rc}", flush=True)
 
-    # Read updated agent ID if available
+    # Clean up agent ID file if present
     if os.path.exists(agent_id_file):
         try:
-            with open(agent_id_file) as f:
-                agent_id = f.read().strip()
-            if agent_id:
-                print(f"[watcher] Session agent ID: {agent_id}", flush=True)
             os.unlink(agent_id_file)
         except OSError:
             pass
 
-    # Prune old session logs
     prune_old_sessions(session_dir, max_sessions)
 
 
@@ -169,7 +182,7 @@ def prune_old_sessions(session_dir: str, max_sessions: int) -> None:
         for old_log in logs[:excess]:
             try:
                 os.unlink(old_log)
-                print(f"[watcher] Pruned old session log: {os.path.basename(old_log)}", flush=True)
+                print(f"[watcher] Pruned: {os.path.basename(old_log)}", flush=True)
             except OSError:
                 pass
 
@@ -198,36 +211,38 @@ def main():
         print("[watcher] Fatal: credentials missing coordinator_url or api_token", flush=True)
         sys.exit(1)
 
-    # Machine name: prefer env var (set by run script), fall back to credentials agent_pattern
-    machine_name = os.environ.get("C3PO_MACHINE_NAME", "")
+    # Machine and project name come from env vars set by the run script
+    machine_name = os.environ.get("C3PO_MACHINE_NAME", "").strip()
+    project_name = os.environ.get("C3PO_PROJECT_NAME", "").strip()
     if not machine_name:
-        agent_pattern = creds.get("agent_pattern", "")
-        machine_name = agent_pattern.split("/")[0] if agent_pattern else ""
-    if not machine_name:
-        print("[watcher] Fatal: cannot determine machine name (set C3PO_MACHINE_NAME env var)", flush=True)
+        print("[watcher] Fatal: C3PO_MACHINE_NAME env var not set", flush=True)
+        sys.exit(1)
+    if not project_name:
+        print("[watcher] Fatal: C3PO_PROJECT_NAME env var not set", flush=True)
         sys.exit(1)
 
     print(f"[watcher] Coordinator: {coordinator_url}", flush=True)
-    print(f"[watcher] Machine name: {machine_name}", flush=True)
+    print(f"[watcher] Agent identity: {machine_name}/{project_name}", flush=True)
 
-    # Build env for Claude sessions (inherit current env + add session-specific vars)
+    # Build env for Claude sessions
     base_env = os.environ.copy()
     base_env["C3PO_KEEP_REGISTERED"] = "1"
 
-    # Claim watching state
-    claim_name(coordinator_url, token, machine_name)
+    # Claim watching state and get assigned agent ID
+    agent_id = claim_watching_state(coordinator_url, token, machine_name, project_name)
+    if agent_id is None:
+        print("[watcher] Fatal: failed to claim watching state", flush=True)
+        sys.exit(1)
 
-    print("[watcher] Entering poll loop...", flush=True)
+    print(f"[watcher] Entering poll loop (agent_id={agent_id})...", flush=True)
 
     while True:
-        result = wait_for_message(coordinator_url, token, machine_name)
+        result = wait_for_message(coordinator_url, token)
 
         if result == "received":
             print("[watcher] Message received, launching session...", flush=True)
-            # Re-register as active before launching session
-            make_request(f"{coordinator_url}/agent/api/register",
-                         method="POST", token=token, data=b"{}", timeout=10,
-                         machine_name=machine_name)
+            # Re-register as active before launching (coordinator finds offline entry, updates in-place)
+            agent_id = register_agent(coordinator_url, token, machine_name, project_name) or agent_id
             try:
                 launch_session(
                     work_dir=args.work_dir,
@@ -238,12 +253,11 @@ def main():
                 )
             except Exception as e:
                 print(f"[watcher] Session error: {e}", flush=True)
-            # Return to watching state after session
-            claim_name(coordinator_url, token, machine_name)
+            # Return to watching state
+            agent_id = claim_watching_state(coordinator_url, token, machine_name, project_name) or agent_id
 
         elif result == "timeout":
-            # Normal poll timeout, loop immediately
-            pass
+            pass  # Normal poll timeout, loop immediately
 
         elif result.startswith("retry:"):
             try:
@@ -256,14 +270,13 @@ def main():
         elif result == "error":
             print("[watcher] Network error, sleeping 10s before retry...", flush=True)
             time.sleep(10)
-            # Try to re-enter watching state after network recovery
             try:
-                claim_name(coordinator_url, token, machine_name)
+                agent_id = claim_watching_state(coordinator_url, token, machine_name, project_name) or agent_id
             except Exception as e:
                 print(f"[watcher] Failed to reclaim watching state: {e}", flush=True)
 
         else:
-            print(f"[watcher] Unknown wait result: {result}, sleeping 5s...", flush=True)
+            print(f"[watcher] Unknown wait result: {result!r}, sleeping 5s...", flush=True)
             time.sleep(5)
 
 

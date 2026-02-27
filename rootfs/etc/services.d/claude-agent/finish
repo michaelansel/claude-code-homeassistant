@@ -3,6 +3,10 @@
 bashio::log.info "Claude Code agent stopping, unregistering from c3po..."
 
 CREDS_FILE="/root/.claude/c3po-credentials.json"
+MACHINE_NAME=$(bashio::config 'machine_name')
+PROJECT_NAME=$(bashio::config 'project_name')
+AGENT_ID="${MACHINE_NAME}/${PROJECT_NAME}"
+
 if [ -f "$CREDS_FILE" ]; then
     coord_url=$(jq -r '.coordinator_url' "$CREDS_FILE" 2>/dev/null || echo "")
     cred_token=$(jq -r '.api_token' "$CREDS_FILE" 2>/dev/null || echo "")
@@ -10,10 +14,11 @@ if [ -f "$CREDS_FILE" ]; then
        [ -n "$cred_token" ] && [ "$cred_token" != "null" ]; then
         curl -s -o /dev/null --max-time 5 -X POST \
             -H "Authorization: Bearer $cred_token" \
+            -H "X-Machine-Name: $AGENT_ID" \
             -H "Content-Type: application/json" \
             -d '{}' \
             "$coord_url/agent/api/unregister" || true
-        bashio::log.info "Unregistered from c3po"
+        bashio::log.info "Unregistered '$AGENT_ID' from c3po"
     fi
 fi
 
