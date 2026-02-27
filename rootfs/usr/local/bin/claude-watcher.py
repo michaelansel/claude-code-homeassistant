@@ -101,11 +101,13 @@ def claim_watching_state(coordinator_url: str, token: str,
     return agent_id
 
 
-def wait_for_message(coordinator_url: str, token: str, poll_timeout: int = 30) -> str:
+def wait_for_message(coordinator_url: str, token: str, agent_id: str,
+                     poll_timeout: int = 30) -> str:
     """Poll /agent/api/wait. Returns 'received', 'timeout', 'retry:N', or 'error'."""
     url = f"{coordinator_url}/agent/api/wait?timeout={poll_timeout}"
     try:
-        status, body = make_request(url, token=token, timeout=poll_timeout + 10)
+        status, body = make_request(url, token=token, timeout=poll_timeout + 10,
+                                    extra_headers={"X-Machine-Name": agent_id})
         if status == 200 and isinstance(body, dict):
             return body.get("status", "timeout")
         if status == 429:
@@ -237,7 +239,7 @@ def main():
     print(f"[watcher] Entering poll loop (agent_id={agent_id})...", flush=True)
 
     while True:
-        result = wait_for_message(coordinator_url, token)
+        result = wait_for_message(coordinator_url, token, agent_id)
 
         if result == "received":
             print("[watcher] Message received, launching session...", flush=True)
