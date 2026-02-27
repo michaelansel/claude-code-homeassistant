@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Home Assistant add-on that runs Claude Code as an automated agent with c3po multi-agent coordination. The add-on uses S6 process supervision to run `claude -p "/c3po auto"` in a container, enabling background task execution coordinated through c3po.
+Home Assistant add-on that runs Claude Code as an automated agent with c3po multi-agent coordination. The add-on uses S6 process supervision to run a Python watcher (`claude-watcher.py`) that keeps the agent registered in c3po and launches Claude sessions on demand.
 
-Design philosophy: "Radical simplicity" — only 3 core implementation files, no Docker-in-Docker, no Python orchestration layer.
+Design philosophy: "Radical simplicity" — everything runs as root, no user switching, no Python orchestration overhead beyond the watcher.
 
 ## Build Commands
 
@@ -17,6 +17,7 @@ finch build -t claude-code-agent:test .
 # Verify build
 finch run --rm claude-code-agent:test which claude
 finch run --rm claude-code-agent:test node --version
+finch run --rm claude-code-agent:test python3 /usr/local/bin/claude-watcher.py --help
 
 # Tag a release (triggers GitHub Actions build + GitHub release)
 git tag -a v0.x.0 -m "Release v0.x.0"
@@ -30,28 +31,32 @@ There are no tests, linters, or formatters configured. Testing is manual per TES
 ### Core Files (the entire implementation)
 
 - **`config.yaml`** — Add-on metadata, version, and configuration schema (options the user sets in HA UI)
-- **`Dockerfile`** — Alpine-based container: installs Node.js, npm, Claude Code, creates non-root `node` user (UID 1000)
-- **`rootfs/etc/services.d/claude-agent/run`** — S6 service script: validates config, handles first-run c3po enrollment, launches Claude
-- **`rootfs/etc/services.d/claude-agent/finish`** — S6 cleanup script
+- **`Dockerfile`** — Alpine-based container: installs Node.js, npm, Claude Code as root; symlinks `/root/.claude` → `/data/claude`
+- **`rootfs/etc/cont-init.d/01-setup.sh`** — Oneshot init: validates config, enrollment, plugin updates, credential validation
+- **`rootfs/etc/cont-init.d/02-sessions-context.sh`** — Injects `CLAUDE.md` in work_dir with session log location
+- **`rootfs/etc/services.d/claude-agent/run`** — Thin S6 launcher: exports env vars, execs `claude-watcher.py`
+- **`rootfs/etc/services.d/claude-agent/finish`** — Unregisters agent from c3po on stop
+- **`rootfs/usr/local/bin/claude-watcher.py`** — Watcher loop: keeps agent as "watching" in c3po, launches Claude sessions when messages arrive, logs sessions to `/data/sessions/`
 
 ### Runtime Flow
 
-1. S6 starts the `run` script
-2. Validates OAuth token format (`sk-ant-*` or `sk-at-*`) and c3po URL using `bashio`
-3. On first run only: installs c3po plugin, runs enrollment with admin token, sets flag `/data/.c3po-setup-complete`
-4. Updates installed plugins (every start)
-5. Validates c3po credentials against coordinator (every start); clears setup flag on 403 for auto re-enrollment
-6. Runs user-configured `init_commands` as `node` user
-7. Exports user-configured `env_vars`
-8. Executes `claude --dangerously-skip-permissions [--model MODEL] -p "/c3po auto"` as the `node` user
-9. S6 auto-restarts on crash; health check runs `pgrep -f "claude.*c3po"` every 30s
+1. S6 runs `cont-init.d/` scripts once on container start:
+   - `01-setup.sh`: Validates OAuth token format, c3po URL; ensures `/data/claude` and `/data/sessions` exist; handles first-run c3po enrollment (download setup.py, enroll, install plugin); updates plugins every start; validates credentials against coordinator; recovers MCP config if needed; runs user `init_commands`
+   - `02-sessions-context.sh`: Writes `.claude/CLAUDE.md` in work_dir with session log context (only if file doesn't exist or has managed marker)
+2. S6 starts the `claude-agent` service (the `run` script)
+3. `run` exports env vars (`CLAUDE_CODE_OAUTH_TOKEN`, `C3PO_MACHINE_NAME`, etc.) and `exec`s `claude-watcher.py`
+4. `claude-watcher.py` claims "watching" state in c3po (register + unregister-with-keep), then enters poll loop
+5. On message received: re-registers as active, launches `claude --dangerously-skip-permissions [--model MODEL] -p "/c3po auto"`, logs to `/data/sessions/session-{ISO}.log`, returns to watching state
+6. On stop: `finish` script POSTs to `/agent/api/unregister` (full unregister, no keep)
+7. Health check runs `pgrep -f "claude-watcher"` every 30s
 
 ### Storage Mapping
 
 - `/config` → Home Assistant configuration (read-write)
-- `/data` → Persistent add-on storage (credentials survive restarts via symlink `/home/node/.claude` → `/data/claude`)
+- `/data` → Persistent add-on storage: `/data/claude` (credentials, plugins), `/data/sessions` (session logs)
 - `/share` → Shared storage between add-ons (read-write)
 - `/media` → Media files (read-only)
+- Symlinks: `/root/.claude` → `/data/claude`, `/root/.claude.json` → `/data/claude-user-config.json`
 
 ### CI/CD
 
@@ -59,7 +64,7 @@ GitHub Actions workflow (`.github/workflows/build.yml`) builds with Docker Build
 
 ## Key Patterns
 
-**Config validation** in the run script uses `bashio` helpers:
+**Config validation** in init scripts uses `bashio` helpers:
 ```bash
 if ! bashio::config.has_value 'option_name'; then
     bashio::log.fatal "Error message"
@@ -67,9 +72,11 @@ if ! bashio::config.has_value 'option_name'; then
 fi
 ```
 
-**Running commands as non-root**: `s6-setuidgid node bash <<EOF ... EOF`
+**Everything runs as root** — no `s6-setuidgid` needed. Claude Code and all tools run as root in the container.
 
-**One-time setup**: Uses flag files in `/data/` to skip setup on subsequent starts.
+**One-time setup**: Uses flag file `/data/.c3po-setup-complete` to skip enrollment on subsequent starts.
+
+**Watcher pattern**: Agent stays registered as "watching" between sessions so c3po can track it. Sessions are launched on demand when messages arrive, not on a fixed loop.
 
 ## Configuration Options
 
