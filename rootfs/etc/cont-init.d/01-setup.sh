@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.5"
+ADDON_VERSION="0.2.6"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -38,10 +38,11 @@ if [ ! -f /data/claude-user-config.json ]; then
 fi
 
 # Migration: v0.1.x ran as node user; v0.2.x runs as root.
-# Force plugin reinstall once so skills are registered for the root user context.
+# Wipe the entire plugins directory and force a clean reinstall.
 # Does NOT clear the enrollment flag — credentials are still valid.
 if [ -f /data/.c3po-setup-complete ] && [ ! -f /data/.c3po-setup-v2 ]; then
-    bashio::log.info "Migrating from v0.1.x: forcing plugin reinstall for root user context..."
+    bashio::log.info "Migrating from v0.1.x: wiping plugins directory for clean root-user reinstall..."
+    rm -rf /data/claude/plugins
     rm -f /data/.c3po-plugin-installed
 fi
 
