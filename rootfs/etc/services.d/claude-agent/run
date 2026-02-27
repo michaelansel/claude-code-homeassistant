@@ -15,6 +15,8 @@ export C3PO_KEEP_REGISTERED="1"
 export TMPDIR=/root/.claude/tmp
 export PYTHONUNBUFFERED=1
 export HOME=/root
+# Allow --dangerously-skip-permissions to run as root (container is a sandbox)
+export IS_SANDBOX=1
 
 # Export custom env vars
 if bashio::config.has_value 'env_vars'; then

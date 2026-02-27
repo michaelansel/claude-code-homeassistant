@@ -57,6 +57,7 @@ C3PO_MACHINE_NAME=haos \
 C3PO_PROJECT_NAME=homeassistant \
 PYTHONUNBUFFERED=1 \
 CLAUDECODE="" \
+IS_SANDBOX=1 \
     python3 rootfs/usr/local/bin/claude-watcher.py \
         --creds-file "$CREDS_FILE" \
         --work-dir "$TMPDIR_TEST" \
