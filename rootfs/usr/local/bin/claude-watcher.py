@@ -122,7 +122,13 @@ def wait_for_message(coordinator_url: str, token: str, agent_id: str,
         return "error"
 
 
-def launch_session(work_dir: str, model_flag: str, session_dir: str,
+DEFAULT_PROMPT = (
+    "Check your c3po inbox for pending messages and handle them. "
+    "Reply to each message. When done, exit."
+)
+
+
+def launch_session(work_dir: str, model_flag: str, prompt: str, session_dir: str,
                    env: dict, max_sessions: int) -> None:
     """Launch a claude session, log output, prune old logs."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -131,7 +137,7 @@ def launch_session(work_dir: str, model_flag: str, session_dir: str,
     cmd = ["claude", "--dangerously-skip-permissions"]
     if model_flag:
         cmd += model_flag.split()
-    cmd += ["-p", "/c3po auto"]
+    cmd += ["-p", prompt or DEFAULT_PROMPT]
 
     print(f"[watcher] Launching session → {log_path}", flush=True)
 
@@ -193,6 +199,7 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Code c3po watcher")
     parser.add_argument("--work-dir", default="/config", help="Working directory for Claude")
     parser.add_argument("--model-flag", default="", help="Model flag (e.g. '--model opus')")
+    parser.add_argument("--prompt", default="", help="Prompt for Claude sessions (default: check c3po inbox and handle messages)")
     parser.add_argument("--session-dir", default="/data/sessions", help="Session log directory")
     parser.add_argument("--max-sessions", type=int, default=50, help="Max session logs to keep")
     parser.add_argument("--creds-file", default="/root/.claude/c3po-credentials.json",
@@ -249,6 +256,7 @@ def main():
                 launch_session(
                     work_dir=args.work_dir,
                     model_flag=args.model_flag,
+                    prompt=args.prompt,
                     session_dir=args.session_dir,
                     env=base_env,
                     max_sessions=args.max_sessions,

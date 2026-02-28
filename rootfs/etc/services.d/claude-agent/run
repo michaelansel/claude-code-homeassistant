@@ -32,11 +32,18 @@ if bashio::config.has_value 'model'; then
     MODEL_FLAG="--model $(bashio::config 'model')"
 fi
 
+# Build prompt flag
+PROMPT_FLAG=""
+if bashio::config.has_value 'prompt'; then
+    PROMPT_FLAG="$(bashio::config 'prompt')"
+fi
+
 bashio::log.info "Starting claude-watcher in ${WORK_DIR}..."
 cd "$WORK_DIR"
 
 exec python3 /usr/local/bin/claude-watcher.py \
     --work-dir "$WORK_DIR" \
     --model-flag "$MODEL_FLAG" \
+    --prompt "$PROMPT_FLAG" \
     --session-dir /data/sessions \
     --max-sessions 50
