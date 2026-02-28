@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.2.9"
+ADDON_VERSION="0.3.0"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 
@@ -95,16 +95,19 @@ else
 fi
 
 # --- Ensure c3po plugin is installed (every start) ---
-# Mirror claude-code-docker's setup-c3po pattern exactly:
-#   marketplace: try update (fast), fall back to add (first time)
-#   plugin:      try update (fast), fall back to install (first time)
 bashio::log.info "Updating/installing c3po plugin..."
-claude plugin marketplace update michaelansel 2>/dev/null \
-    || claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  marketplace: $line"; done
-claude plugin update c3po@michaelansel 2>/dev/null \
+# Add marketplace if not yet registered (first time only)
+if ! claude plugin marketplace list 2>/dev/null | grep -q 'michaelansel'; then
+    claude plugin marketplace add michaelansel/claude-code-plugins 2>&1 \
+        | while IFS= read -r line; do bashio::log.info "  marketplace add: $line"; done || true
+fi
+# Update marketplace index (best effort, non-fatal)
+claude plugin marketplace update michaelansel 2>&1 \
+    | while IFS= read -r line; do bashio::log.info "  marketplace update: $line"; done || true
+# Install or update plugin (best effort, non-fatal)
+{ claude plugin update c3po@michaelansel 2>/dev/null \
     || claude plugin install c3po@michaelansel 2>&1 \
-        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done
+        | while IFS= read -r line; do bashio::log.info "  plugin: $line"; done; } || true
 
 # --- Update installed plugins (every start) ---
 PLUGIN_DIR="/root/.claude/plugins"

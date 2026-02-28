@@ -1,5 +1,5 @@
 name: Claude Code Agent
-version: "0.2.9"
+version: "0.3.0"
 slug: claude-code-agent
 description: Run Claude Code agents with c3po coordination
 arch:
@@ -24,7 +24,7 @@ options:
   c3po_admin_token: ""
   work_dir: "/config"
   project_name: "homeassistant"
-  machine_name: "homeassistant"
+  machine_name: "haos-app"
   model: ""
   env_vars: []
   init_commands: []
