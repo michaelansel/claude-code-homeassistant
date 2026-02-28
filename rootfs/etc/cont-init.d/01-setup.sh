@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-ADDON_VERSION="0.3.1"
+ADDON_VERSION="0.3.2"
 bashio::log.info "Claude Code agent v${ADDON_VERSION} - running setup..."
 bashio::log.info "Claude Code version: $(claude --version 2>&1 || echo 'unknown')"
 

@@ -102,42 +102,70 @@ def claim_watching_state(coordinator_url: str, token: str,
 
 
 def wait_for_message(coordinator_url: str, token: str, agent_id: str,
-                     poll_timeout: int = 30) -> str:
-    """Poll /agent/api/wait. Returns 'received', 'timeout', 'retry:N', or 'error'."""
+                     poll_timeout: int = 30) -> tuple:
+    """Poll /agent/api/wait. Returns (status, messages) where status is
+    'received', 'timeout', 'retry:N', or 'error', and messages is a list."""
     url = f"{coordinator_url}/agent/api/wait?timeout={poll_timeout}"
     try:
         status, body = make_request(url, token=token, timeout=poll_timeout + 10,
                                     extra_headers={"X-Machine-Name": agent_id})
         if status == 200 and isinstance(body, dict):
-            return body.get("status", "timeout")
+            s = body.get("status", "timeout")
+            messages = body.get("messages", []) if s == "received" else []
+            return s, messages
         if status == 429:
             retry_after = 5
             if isinstance(body, dict):
                 retry_after = int(body.get("retry_after", 5))
-            return f"retry:{retry_after}"
+            return f"retry:{retry_after}", []
         print(f"[watcher] Unexpected wait response HTTP {status}: {body}", flush=True)
-        return "timeout"
+        return "timeout", []
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         print(f"[watcher] Network error on wait: {e}", flush=True)
-        return "error"
+        return "error", []
 
 
 DEFAULT_PROMPT = (
-    "Check your c3po inbox for pending messages and handle them. "
-    "Reply to each message. When done, exit."
+    "Process the c3po message(s) above. Reply using the c3po MCP reply tool "
+    "with the message_id. When done, exit."
 )
 
 
+def format_messages_for_prompt(messages: list) -> str:
+    """Format c3po messages as context for Claude's prompt."""
+    if not messages:
+        return ""
+    lines = ["You have received the following c3po message(s):", ""]
+    for msg in messages:
+        from_agent = msg.get("from_agent", "unknown")
+        content = msg.get("message", msg.get("content", ""))
+        msg_id = msg.get("id", msg.get("message_id", ""))
+        lines.append(f"From: {from_agent}")
+        if msg_id:
+            lines.append(f"Message-ID: {msg_id}")
+        lines.append(f"Message: {content}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def launch_session(work_dir: str, model_flag: str, prompt: str, session_dir: str,
-                   env: dict, max_sessions: int) -> None:
+                   env: dict, max_sessions: int, messages: list | None = None) -> None:
     """Launch a claude session, log output, prune old logs."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log_path = os.path.join(session_dir, f"session-{ts}.log")
 
+    # Build the full prompt: message context + task instructions
+    base_prompt = prompt or DEFAULT_PROMPT
+    if messages:
+        msg_context = format_messages_for_prompt(messages)
+        full_prompt = f"{msg_context}\n{base_prompt}"
+    else:
+        full_prompt = base_prompt
+
     cmd = ["claude", "--dangerously-skip-permissions"]
     if model_flag:
         cmd += model_flag.split()
-    cmd += ["-p", prompt or DEFAULT_PROMPT]
+    cmd += ["-p", full_prompt]
 
     print(f"[watcher] Launching session → {log_path}", flush=True)
 
@@ -246,11 +274,14 @@ def main():
     print(f"[watcher] Entering poll loop (agent_id={agent_id})...", flush=True)
 
     while True:
-        result = wait_for_message(coordinator_url, token, agent_id)
+        result, messages = wait_for_message(coordinator_url, token, agent_id)
 
         if result == "received":
-            print("[watcher] Message received, launching session...", flush=True)
-            # Re-register as active before launching (coordinator finds offline entry, updates in-place)
+            if messages:
+                print(f"[watcher] {len(messages)} message(s) received, launching session...", flush=True)
+            else:
+                print("[watcher] Notified (no message content), launching session...", flush=True)
+            # Re-register as active before launching
             agent_id = register_agent(coordinator_url, token, machine_name, project_name) or agent_id
             try:
                 launch_session(
@@ -260,6 +291,7 @@ def main():
                     session_dir=args.session_dir,
                     env=base_env,
                     max_sessions=args.max_sessions,
+                    messages=messages,
                 )
             except Exception as e:
                 print(f"[watcher] Session error: {e}", flush=True)
