@@ -281,8 +281,8 @@ def main():
                 print(f"[watcher] {len(messages)} message(s) received, launching session...", flush=True)
             else:
                 print("[watcher] Notified (no message content), launching session...", flush=True)
-            # Re-register as active before launching
-            agent_id = register_agent(coordinator_url, token, machine_name, project_name) or agent_id
+            # Do NOT re-register before launching — Claude's SessionStart hook re-registers
+            # in-place against the offline entry (avoids -2 suffix collision).
             try:
                 launch_session(
                     work_dir=args.work_dir,
@@ -295,8 +295,9 @@ def main():
                 )
             except Exception as e:
                 print(f"[watcher] Session error: {e}", flush=True)
-            # Return to watching state
-            agent_id = claim_watching_state(coordinator_url, token, machine_name, project_name) or agent_id
+            # Ensure entry is offline/watching after session (C3PO_KEEP_REGISTERED=1
+            # handles normal exit; this call handles crashes where SessionEnd didn't run).
+            enter_watching_state(coordinator_url, token, agent_id)
 
         elif result == "timeout":
             pass  # Normal poll timeout, loop immediately
